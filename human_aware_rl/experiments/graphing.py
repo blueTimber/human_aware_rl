@@ -9,16 +9,16 @@ def get_algorithm_color(alg):
 
     if alg == 'CP+CP' or alg == 'PPO_SP+PPO_SP' or alg == 'PBT+PBT' or alg == "H+H" or alg == "avg_bc_train+bc_train":
         return opt_baseline_col
-    elif alg in ["CP+BC_test", 'PPO_SP+BC_test_0', 'PPO_SP+BC_test_1', 'ppo_sp_no_advers_0', 'ppo_sp_no_advers_1', 'ppo_sp_base_0', 'ppo_sp_base_1']:
+    elif alg in ["CP+BC_test", 'CP+BC_test_0', 'CP+BC_test_1', 'PPO_SP+BC_test_0', 'PPO_SP+BC_test_1', 'ppo_sp_no_advers_0', 'ppo_sp_no_advers_1', 'ppo_sp_base_0', 'ppo_sp_base_1']:
         return other_other_col #'#35ce47'#'#0000cc'
-    elif alg in ['pbt_no_advers_0', 'pbt_no_advers_1', 'pbt_base_0', 'pbt_base_1', 'PBT+BC_0', 'PBT+BC_1']:
+    elif alg in ['pbt_no_advers_0', 'pbt_no_advers_1', 'pbt_base_0', 'pbt_base_1', 'PBT+BC_0', 'PBT+BC_1', 'P_BC_train+BC_test_0_stochastic', 'P_BC_train+BC_test_1_stochastic']:
         return other_col #'#35ce47'#'#0000cc'
     elif alg in ["BC_train+BC_test_0", "BC_train+BC_test_1"]:
         return human_baseline_col #"#3884c9"
-    elif alg in ["P+BC_test", 'PPO_BC_train+BC_test_0', 'PPO_BC_train+BC_test_1', 'ppo_bc_no_advers_0', 'ppo_bc_no_advers_1', 'ppo_bc_base_0', 'ppo_bc_base_1']:
+    elif alg in ["P+BC_test", 'P_BC_train+BC_test_0', 'P_BC_train+BC_test_1', 'PPO_BC_train+BC_test_0', 'PPO_BC_train+BC_test_1', 'ppo_bc_no_advers_0', 'ppo_bc_no_advers_1', 'ppo_bc_base_0', 'ppo_bc_base_1']:
         return ours_col #'#35ce47'#'#00cc00'
     else:
-        raise ValueError(alg, "not recognized")
+        raise ValueError(alg, "name not recognized")
 
 def get_texture(alg):
     if alg in ['PBT+PBT', 'avg_bc_train+bc_train']:

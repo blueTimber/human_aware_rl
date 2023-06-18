@@ -1,6 +1,6 @@
 import itertools, os
 import numpy as np
-import pickle, time
+import pickle, time, copy
 from overcooked_ai_py.utils import pos_distance, manhattan_distance
 from overcooked_ai_py.planning.search import SearchTree, Graph
 from overcooked_ai_py.mdp.actions import Action, Direction
@@ -69,11 +69,11 @@ class MotionPlanner(object):
         action_plan, pos_and_or_path, plan_cost = self.all_plans[plan_key]
         return action_plan, pos_and_or_path, plan_cost
     
-    def get_gridworld_distance(self, start_pos_and_or, goal_pos_and_or):
+    def get_gridworld_distance(self, start_pos_and_or, goal_pos_and_or, facing_check=True):
         """Number of actions necessary to go from starting position
         and orientations to goal position and orientation (not including
         interaction action)"""
-        assert self.is_valid_motion_start_goal_pair(start_pos_and_or, goal_pos_and_or), \
+        assert self.is_valid_motion_start_goal_pair(start_pos_and_or, goal_pos_and_or,facing_check=facing_check), \
             "Goal position and orientation were not a valid motion goal"
         _, _, plan_cost = self.get_plan(start_pos_and_or, goal_pos_and_or)
         # Removing interaction cost
@@ -100,15 +100,15 @@ class MotionPlanner(object):
         valid_pos_and_ors = self.mdp.get_valid_player_positions_and_orientations()
         valid_motion_goals = filter(self.is_valid_motion_goal, valid_pos_and_ors)
         for start_motion_state, goal_motion_state in itertools.product(valid_pos_and_ors, valid_motion_goals):
-            if not self.is_valid_motion_start_goal_pair(start_motion_state, goal_motion_state):
+            if not self.is_valid_motion_start_goal_pair(start_motion_state, goal_motion_state, facing_check=False):
                 continue
-            action_plan, pos_and_or_path, plan_cost = self._compute_plan(start_motion_state, goal_motion_state)
+            action_plan, pos_and_or_path, plan_cost = self._compute_plan(start_motion_state, goal_motion_state, facing_check=False)
             plan_key = (start_motion_state, goal_motion_state)
             all_plans[plan_key] = (action_plan, pos_and_or_path, plan_cost)
         return all_plans
 
-    def is_valid_motion_start_goal_pair(self, start_pos_and_or, goal_pos_and_or, debug=False):
-        if not self.is_valid_motion_goal(goal_pos_and_or):
+    def is_valid_motion_start_goal_pair(self, start_pos_and_or, goal_pos_and_or, facing_check=True, debug=False):
+        if facing_check and not self.is_valid_motion_goal(goal_pos_and_or):
             return False
         if not self.positions_are_connected(start_pos_and_or, goal_pos_and_or):
             return False
@@ -128,7 +128,7 @@ class MotionPlanner(object):
             return False
         return True
 
-    def _compute_plan(self, start_motion_state, goal_motion_state):
+    def _compute_plan(self, start_motion_state, goal_motion_state, facing_check=True):
         """Computes optimal action plan for single agent movement
         
         Args:
@@ -136,7 +136,7 @@ class MotionPlanner(object):
             positions_plan (list): positions path followed by agent
             goal_motion_state (tuple): goal positions and orientations
         """
-        assert self.is_valid_motion_start_goal_pair(start_motion_state, goal_motion_state)
+        assert self.is_valid_motion_start_goal_pair(start_motion_state, goal_motion_state, facing_check)
         positions_plan = self._get_position_plan_from_graph(start_motion_state, goal_motion_state)
         action_plan, pos_and_or_path, plan_length = self.action_plan_from_positions(positions_plan, start_motion_state, goal_motion_state)
         return action_plan, pos_and_or_path, plan_length
@@ -221,7 +221,7 @@ class MotionPlanner(object):
         start_position, start_orientation = start_motion_state
         return [(action, self.mdp._move_if_direction(start_position, start_orientation, action)) for action in Action.ALL_ACTIONS]
 
-    def min_cost_between_features(self, pos_list1, pos_list2, manhattan_if_fail=False):
+    def min_cost_between_features(self, pos_list1, pos_list2, manhattan_if_fail=False, facing_check=True):
         """
         Determines the minimum number of timesteps necessary for a player to go from any 
         terrain feature in list1 to any feature in list2 and perform an interact action
@@ -230,7 +230,7 @@ class MotionPlanner(object):
         min_manhattan = np.Inf
         for pos1, pos2 in itertools.product(pos_list1, pos_list2):
             for mg1, mg2 in itertools.product(self.motion_goals_for_pos[pos1], self.motion_goals_for_pos[pos2]):
-                if not self.is_valid_motion_start_goal_pair(mg1, mg2):
+                if not self.is_valid_motion_start_goal_pair(mg1, mg2, facing_check):
                     if manhattan_if_fail:
                         pos0, pos1 = mg1[0], mg2[0]
                         curr_man_dist = manhattan_distance(pos0, pos1)
@@ -275,10 +275,14 @@ class MotionPlanner(object):
         """Creates a dictionary of all possible goal states for all possible
         terrain features that the agent might want to interact with."""
         terrain_feature_locations = []
+        terrain_walk_locations = []
         for terrain_type, pos_list in self.mdp.terrain_pos_dict.items():
             if terrain_type != ' ':
                 terrain_feature_locations += pos_list
-        return {feature_pos:self._get_possible_motion_goals_for_feature(feature_pos) for feature_pos in terrain_feature_locations}
+            else:
+                terrain_walk_locations = filter(lambda p: p in self.mdp.get_valid_player_positions(), pos_list)
+        return {**{feature_pos:self._get_possible_motion_goals_for_feature(feature_pos) for feature_pos in terrain_feature_locations},
+                **{walk_pos:[(walk_pos, Direction.NORTH)] for walk_pos in terrain_walk_locations}}
 
     def _get_possible_motion_goals_for_feature(self, goal_pos):
         """Returns a list of possible goal positions (and orientations)
@@ -735,7 +739,15 @@ class MediumLevelActionManager(object):
 
     def joint_ml_actions(self, state):
         """Determine all possible joint medium level actions for a certain state"""
-        agent1_actions, agent2_actions = tuple(self.get_medium_level_actions(state, player) for player in state.players)
+        #agent1_actions, agent2_actions = tuple(self.get_medium_level_actions(state, player) for player in state.players)
+        agent1_actions = self.get_medium_level_actions(state, state.players[0])
+        if len(agent1_actions) == 0:
+            agent1_actions = self.get_medium_level_actions(state, state.players[0], waiting_substitute=True)
+
+        agent2_actions = self.get_medium_level_actions(state, state.players[1])
+        if len(agent2_actions) == 0:
+            agent2_actions = self.get_medium_level_actions(state, state.players[1], waiting_substitute=True)
+
         joint_ml_actions = list(itertools.product(agent1_actions, agent2_actions))
         
         # ml actions are nothing but specific joint motion goals
@@ -768,7 +780,11 @@ class MediumLevelActionManager(object):
             player_actions (list): possible motion goals (pairs of goal positions and orientations)
         """
         player_actions = []
-        counter_pickup_objects = self.mdp.get_counter_objects_dict(state, self.counter_pickup)
+        if waiting_substitute:
+            counter_pickup_objects = self.mdp.get_counter_objects_dict(state, self.counter_pickup)
+        else:
+            counter_pickup_objects = self.mdp.get_counter_objects_dict(state, [])
+
         if not player.has_object():
             onion_pickup = self.pickup_onion_actions(state, counter_pickup_objects)
             tomato_pickup = self.pickup_tomato_actions(state, counter_pickup_objects)
@@ -781,7 +797,8 @@ class MediumLevelActionManager(object):
             pot_states_dict = self.mdp.get_pot_states(state)
 
             # No matter the object, we can place it on a counter
-            if len(self.counter_drop) > 0:
+            # To prevent useless actions, only consider dropping the item when no other option exists
+            if waiting_substitute and len(self.counter_drop) > 0:
                 player_actions.extend(self.place_obj_on_counter_actions(state))
 
             if player_object.name == 'soup':
@@ -1014,7 +1031,7 @@ class MediumLevelPlanner(object):
         
         expand_fn = lambda state: self.get_successor_states(state)
         goal_fn = lambda state: state.num_orders_remaining == 0
-        heuristic_fn = lambda state: h_fn(state)
+        heuristic_fn = lambda state: h_fn(state, debug=debug)
 
         search_problem = SearchTree(start_state, goal_fn, expand_fn, heuristic_fn, debug=debug)
         ml_plan, cost = search_problem.A_star_graph_search(info=True)
@@ -1052,7 +1069,7 @@ class MediumLevelPlanner(object):
             successor_states.append((goal_jm_state, end_state, min(plan_costs)))
         return successor_states
 
-    def get_successor_states_fixed_other(self, start_state, other_agent, other_agent_idx):
+    def get_successor_states_fixed_other(self, start_state, other_agent, other_agent_idx, history, set_history=False, stochastic=False):
         """
         Get the successor states of a given start state, assuming that the other agent is fixed and will act according to the passed in model
         """
@@ -1067,7 +1084,10 @@ class MediumLevelPlanner(object):
 
         successor_high_level_states = []
         for ml_action in ml_actions:
-            action_plan, end_state, cost = self.get_embedded_low_level_action_plan(start_state, ml_action, other_agent, other_agent_idx)
+            if set_history and history is not None:
+                action_plan, end_state, cost = self.get_embedded_low_level_action_plan(start_state, ml_action, other_agent, other_agent_idx, copy.deepcopy(history))
+            else:
+                action_plan, end_state, cost = self.get_embedded_low_level_action_plan(start_state, ml_action, other_agent, other_agent_idx)
             
             if not self.mdp.is_terminal(end_state):
                 # Adding interact action and deriving last state
@@ -1078,33 +1098,42 @@ class MediumLevelPlanner(object):
 
                 end_state, _ = self.embedded_mdp_step(end_state, Action.INTERACT, other_agent_action, other_agent.agent_index)
 
-            successor_high_level_states.append((action_plan, end_state, cost))
+            if set_history:
+                successor_high_level_states.append((action_plan, end_state, cost, copy.deepcopy(other_agent.history)))
+            else:
+                successor_high_level_states.append((action_plan, end_state, cost))
+        
         return successor_high_level_states
 
-    def get_embedded_low_level_action_plan(self, state, goal_pos_and_or, other_agent, other_agent_idx):
+    def get_embedded_low_level_action_plan(self, state, goal_pos_and_or, other_agent, other_agent_idx, history=None):
         """Find action plan for a specific motion goal with A* considering the other agent"""
         other_agent.set_agent_index(other_agent_idx)
         agent_idx = 1 - other_agent_idx
 
-        expand_fn = lambda state: self.embedded_mdp_succ_fn(state, other_agent)
+        expand_fn = lambda state, hist=None: self.embedded_mdp_succ_fn(state, other_agent, history=hist)
         goal_fn = lambda state: state.players[agent_idx].pos_and_or == goal_pos_and_or or state.num_orders_remaining == 0
         heuristic_fn = lambda state: sum(pos_distance(state.players[agent_idx].position, goal_pos_and_or[0]))
 
-        search_problem = SearchTree(state, goal_fn, expand_fn, heuristic_fn)
+        search_problem = SearchTree(state, goal_fn, expand_fn, heuristic_fn, history=history)
         state_action_plan, cost = search_problem.A_star_graph_search(info=False)
         action_plan, state_plan = zip(*state_action_plan)
         action_plan = action_plan[1:]
         end_state = state_plan[-1]
         return action_plan, end_state, cost
 
-    def embedded_mdp_succ_fn(self, state, other_agent):
+    def embedded_mdp_succ_fn(self, state, other_agent, history=None):
         other_agent_action = other_agent.action(state)
 
         successors = []
         for a in Action.ALL_ACTIONS:
+            if history is not None:
+                other_agent.history = copy.deepcopy(history)
             successor_state, joint_action = self.embedded_mdp_step(state, a, other_agent_action, other_agent.agent_index)
             cost = 1
-            successors.append((joint_action, successor_state, cost))
+            if history is not None:
+                successors.append((joint_action, successor_state, cost, other_agent.history))
+            else:
+                successors.append((joint_action, successor_state, cost))
         return successors
 
     def embedded_mdp_step(self, state, action, other_agent_action, other_agent_index):
@@ -1484,12 +1513,12 @@ class Heuristic(object):
         tomato_locations = self.mdp.get_tomato_dispenser_locations()
 
         heuristic_cost_dict = {
-            'pot-delivery': self.motion_planner.min_cost_between_features(pot_locations, delivery_locations, manhattan_if_fail=True),
-            'dish-pot': self.motion_planner.min_cost_between_features(dish_locations, pot_locations, manhattan_if_fail=True)
+            'pot-delivery': self.motion_planner.min_cost_between_features(pot_locations, delivery_locations, manhattan_if_fail=True) + 1,
+            'dish-pot': self.motion_planner.min_cost_between_features(dish_locations, pot_locations, manhattan_if_fail=True) + 1
         }
 
-        onion_pot_cost = self.motion_planner.min_cost_between_features(onion_locations, pot_locations, manhattan_if_fail=True)
-        tomato_pot_cost = self.motion_planner.min_cost_between_features(tomato_locations, pot_locations, manhattan_if_fail=True)
+        onion_pot_cost = self.motion_planner.min_cost_between_features(onion_locations, pot_locations, manhattan_if_fail=True) + 1
+        tomato_pot_cost = self.motion_planner.min_cost_between_features(tomato_locations, pot_locations, manhattan_if_fail=True) + 1
 
         if debug: print("Heuristic cost dict", heuristic_cost_dict)
         assert onion_pot_cost != np.inf or tomato_pot_cost != np.inf
@@ -1500,7 +1529,7 @@ class Heuristic(object):
         
         return heuristic_cost_dict
     
-    def simple_heuristic(self, state, time=0, debug=False):
+    def simple_heuristic(self, state, time=0, dist=False, debug=False):
         """Simpler heuristic that tends to run faster than current one"""
         # NOTE: State should be modified to have an order list w.r.t. which
         # one can calculate the heuristic
@@ -1510,13 +1539,16 @@ class Heuristic(object):
         player_objects = state.player_objects_by_type
         pot_states_dict = self.mdp.get_pot_states(state)
         num_deliveries_to_go = state.num_orders_remaining
+
+        #NEW
+        pot_locations = self.mdp.get_pot_locations()
         
         full_soups_in_pots = pot_states_dict['onion']['cooking'] + pot_states_dict['tomato']['cooking'] \
                              + pot_states_dict['onion']['ready'] + pot_states_dict['tomato']['ready']
         partially_full_onion_soups = pot_states_dict['onion']['partially_full']
         partially_full_tomato_soups = pot_states_dict['tomato']['partially_full']
-        num_onions_in_partially_full_pots = sum([state.get_object(loc).state[1] for loc in partially_full_onion_soups])
-        num_tomatoes_in_partially_full_pots = sum([state.get_object(loc).state[1] for loc in partially_full_tomato_soups])
+        num_onions_in_partially_full_pots = sum(sorted([state.get_object(loc).state[1] for loc in partially_full_onion_soups], reverse=True)[0:num_deliveries_to_go])
+        num_tomatoes_in_partially_full_pots = sum(sorted([state.get_object(loc).state[1] for loc in partially_full_tomato_soups], reverse=True)[0:num_deliveries_to_go])
 
         soups_in_transit = player_objects['soup']
         dishes_in_transit = objects_dict['dish'] + player_objects['dish']
@@ -1534,20 +1566,45 @@ class Heuristic(object):
 
         pot_to_delivery_costs = self.heuristic_cost_dict['pot-delivery'] * num_pot_to_delivery
         dish_to_pot_costs = self.heuristic_cost_dict['dish-pot'] * num_dish_to_pot
+        if dist: #NEW
+            dish_to_pot_costs += sum(sorted((self.manhat_heuristic(pos.position, pot_locations, self.heuristic_cost_dict['dish-pot']) for pos in dishes_in_transit))
+                                     [0:num_pot_to_delivery])
 
         items_to_pot_costs = []
         if 'onion-pot' in self.heuristic_cost_dict.keys():
             onion_to_pot_costs = self.heuristic_cost_dict['onion-pot'] * num_onion_to_pot
+            
+            if dist: #NEW
+                num_onions = min([max([0, num_pots_to_be_filled * 3 - num_onions_in_partially_full_pots]), len(onions_in_transit)])
+                onion_to_pot_costs += sum(sorted((self.manhat_heuristic(pos.position, pot_locations, self.heuristic_cost_dict['onion-pot'], debug) for pos in onions_in_transit))
+                                          [0:num_onions])
+                
             items_to_pot_costs.append(onion_to_pot_costs)
         if 'tomato-pot' in self.heuristic_cost_dict.keys():
             tomato_to_pot_costs = self.heuristic_cost_dict['tomato-pot'] * num_tomato_to_pot
+
+            if dist: #NEW
+                num_tomatoes = min([max([0, num_pots_to_be_filled * 3 - num_tomatoes_in_partially_full_pots]), len(tomatoes_in_transit)])
+                tomato_to_pot_costs += sum(sorted((self.manhat_heuristic(pos.position, pot_locations, self.heuristic_cost_dict['tomato-pot']) for pos in tomatoes_in_transit))
+                                           [0:num_tomatoes])
+
             items_to_pot_costs.append(tomato_to_pot_costs)
 
         # NOTE: doesn't take into account that a combination of the two might actually be more advantageous.
         # Might cause heuristic to be inadmissable in some edge cases.
         items_to_pot_cost = min(items_to_pot_costs)
 
-        heuristic_cost = (pot_to_delivery_costs + dish_to_pot_costs + items_to_pot_cost) / 2
+        # Cost of cooking soup NEW
+        if dist:
+            pots_left_to_cook = max([0, num_pot_to_delivery - len(pot_states_dict['onion']['ready']) - len(pot_states_dict['tomato']['ready'])])
+            pots_cooking = pot_states_dict['onion']['cooking'] + pot_states_dict['tomato']['cooking']
+            cook_cost = sum(sorted([self.mdp.soup_cooking_time - state.get_object(pos).state[2] for pos in pots_cooking], reverse=True)
+                                [0:min([pots_left_to_cook, len(pots_cooking)])])
+            cook_cost += max([0,(pots_left_to_cook - len(pots_cooking))]) * self.mdp.soup_cooking_time
+        else:
+            cook_cost = 0
+
+        heuristic_cost = (pot_to_delivery_costs + dish_to_pot_costs + items_to_pot_cost + cook_cost) / 2
 
         if debug:
             env = OvercookedEnv(self.mdp)
@@ -1559,11 +1616,26 @@ class Heuristic(object):
                 len(soups_in_transit), len(dishes_in_transit), len(onions_in_transit)
             ))
 
-            print("Trip costs: \t\t pot-del {} \t dish-pot {} \t onion-pot {}".format(
-                pot_to_delivery_costs, dish_to_pot_costs, onion_to_pot_costs
+            print("Trip costs: \t\t pot-del {} \t dish-pot {} \t onion-pot {} \t cook-time {}".format(
+                pot_to_delivery_costs, dish_to_pot_costs, onion_to_pot_costs, cook_cost
             ))
 
             print(str(env) + "HEURISTIC: {}".format(heuristic_cost))
 
         return heuristic_cost
+    
+    def manhat_heuristic(self, pos, pot_locations, heuristic, debug=False):
+        if False:
+            min_cost = self.motion_planner.min_cost_between_features([pos], pot_locations, manhattan_if_fail=True, facing_check=False)
+        else:
+            min_cost = np.inf
+            for pot in pot_locations:
+                cost = manhattan_distance(pos, pot)
+                if cost < min_cost:
+                    min_cost = cost
+
+        if debug:
+            print(pos, min([min_cost, heuristic]))
+        return min([min_cost, heuristic])
+
 

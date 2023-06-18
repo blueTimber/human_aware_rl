@@ -14,13 +14,16 @@ class SearchTree(object):
         heuristic_fn (func): Takes in a state and returns a heuristic value
     """
 
-    def __init__(self, root, goal_fn, expand_fn, heuristic_fn, max_iter_count=10e6, debug=False):
+    def __init__(self, root, goal_fn, expand_fn, heuristic_fn, max_seen_count=1, max_iter_count=10e6, return_best=False, history=None, debug=False):
         self.debug = debug
         self.root = root
         self.is_goal = goal_fn
         self.expand = expand_fn
         self.heuristic_fn = heuristic_fn
+        self.max_seen_count = max_seen_count
         self.max_iter_count = max_iter_count
+        self.return_best = return_best
+        self.history = history
 
     def A_star_graph_search(self, info=False):
         """
@@ -28,10 +31,10 @@ class SearchTree(object):
         """
         start_time = time.time()
         iter_count = 0
-        seen = set()
+        seen = {}
         pq = PriorityQueue()
 
-        root_node = SearchNode(self.root, action=None, parent=None, action_cost=0, debug=self.debug)
+        root_node = SearchNode(self.root, action=None, parent=None, action_cost=0, history=self.history, debug=self.debug)
         pq.push(root_node, self.estimated_total_cost(root_node))
         while not pq.isEmpty():
             curr_node = pq.pop()
@@ -43,29 +46,62 @@ class SearchTree(object):
 
             curr_state = curr_node.state
 
+            # Change made to allow the BC model to break out of the loop
             if curr_state in seen:
-                continue
+                if seen[curr_state] >= self.max_seen_count:
+                    continue
+                else:
+                    seen[curr_state] = seen[curr_state] + 1
+            else:
+                seen[curr_state] = 1
 
-            seen.add(curr_state)
             if iter_count > self.max_iter_count:
                 print("Expanded more than the maximum number of allowed states")
+                if self.return_best:
+                    print("Returning best state found")
+                    print("Time elapsed: \t{:.2f} seconds".format(
+                        time.time() - start_time))
+                    return curr_node.get_path(), curr_node.backwards_cost
+
                 raise TimeoutError("Too many states expanded expanded")
 
             if self.is_goal(curr_state):
                 elapsed_time = time.time() - start_time
+                if elapsed_time < 0.01:
+                    elapsed_time = 0.01
                 if info: print("Found goal after: \t{:.2f} seconds,   \t{} state expanded ({:.2f} unique) \t ~{:.2f} expansions/s".format(
                     elapsed_time, iter_count, len(seen)/iter_count, iter_count/elapsed_time))
                 return curr_node.get_path(), curr_node.backwards_cost
             
-            successors = self.expand(curr_state)
+            if curr_node.history is not None:
+                successors = self.expand(curr_state, curr_node.history)
+            else:
+                successors = self.expand(curr_state)
 
-            for action, child, cost in successors:
-                child_node = SearchNode(child, action, parent=curr_node, action_cost=cost, debug=self.debug)
-                pq.push(child_node, self.estimated_total_cost(child_node))
+            # Incorporate BC model history into
+            if len(successors) > 0 and len(successors[0]) == 4:
+                for action, child, cost, history in successors:
+                    child_node = SearchNode(child, action, parent=curr_node, action_cost=cost, history=history, debug=self.debug)
+                    if self.debug:
+                        print("Backwards cost: ", child_node.backwards_cost)
+                    estimated_cost = self.estimated_total_cost(child_node)
+                    pq.push(child_node, estimated_cost)
+            else:
+                for action, child, cost in successors:
+                    child_node = SearchNode(child, action, parent=curr_node, action_cost=cost, debug=self.debug)
+                    if self.debug:
+                        print("Backwards cost: ", child_node.backwards_cost)
+                    estimated_cost = self.estimated_total_cost(child_node)
+                    pq.push(child_node, estimated_cost)
 
         print("Path for last node expanded: ", [p[0] for p in curr_node.get_path()])
         print("State of last node expanded: ", curr_node.state)
         print("Successors for last node expanded: ", self.expand(curr_state))
+        if self.return_best:
+            print("Returning best state found")
+            print("Time elapsed: \t{:.2f} seconds".format(
+                time.time() - start_time))
+            return curr_node.get_path(), curr_node.backwards_cost
         raise TimeoutError("A* graph search was unable to find any goal state.")
 
     def estimated_total_cost(self, node):
@@ -91,11 +127,12 @@ class SearchNode(object):
         action_cost: Additional cost to get to this node from the parent
     """
 
-    def __init__(self, state, action, parent, action_cost, debug=False):
+    def __init__(self, state, action, parent, action_cost, history=None, debug=False):
         assert state is not None
         self.state = state
         # Action that led to this state
         self.action = action
+        self.history = history
         self.debug = debug
 
         # Parent SearchNode
@@ -106,6 +143,10 @@ class SearchNode(object):
         else:
             self.depth = 0
             self.backwards_cost = 0
+
+        # Stochastic
+        self.stochastic = False
+        self.probs = None
 
     def __lt__(self, other):
         return self.backwards_cost < other.backwards_cost
@@ -232,7 +273,8 @@ class Graph(object):
     def are_in_same_cc(self, node1, node2):
         node1_cc_index = [i for i, cc in enumerate(self.connected_components) if node1 in cc]
         node2_cc_index = [i for i, cc in enumerate(self.connected_components) if node2 in cc]
-        assert len(node1_cc_index) == len(node2_cc_index) == 1, "Node 1 cc: {} \t Node 2 cc: {}".format(node1_cc_index, node2_cc_index)
+        assert len(node1_cc_index) == len(node2_cc_index) == 1, "Node 1 cc: {} \t Node 2 cc: {} \t Node 1: {} \t Node 2: {}".format(
+            node1_cc_index, node2_cc_index, node1, node2)
         return node1_cc_index[0] == node2_cc_index[0]
 
 class NotConnectedError(Exception):

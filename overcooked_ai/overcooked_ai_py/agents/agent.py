@@ -1,5 +1,6 @@
 import itertools
 import numpy as np
+import copy
 
 from overcooked_ai_py.mdp.actions import Action, Direction
 from overcooked_ai_py.planning.planners import Heuristic
@@ -193,15 +194,15 @@ class CoupledPlanningAgent(Agent):
     is also a CoupledPlanningAgent, and then takes the first action in the plan.
     """
 
-    def __init__(self, mlp, delivery_horizon=2, heuristic=None):
+    def __init__(self, mlp, delivery_horizon=2, heuristic=None, dist_heur=False):
         self.mlp = mlp
         self.mlp.failures = 0
-        self.heuristic = heuristic if heuristic is not None else Heuristic(mlp.mp).simple_heuristic
+        self.heuristic = heuristic if heuristic is not None else lambda state, time=0, debug=False: Heuristic(mlp.mp).simple_heuristic(state, time, dist=dist_heur, debug=debug)
         self.delivery_horizon = delivery_horizon
 
     def action(self, state):
         try:
-            joint_action_plan = self.mlp.get_low_level_action_plan(state, self.heuristic, delivery_horizon=self.delivery_horizon, goal_info=True)
+            joint_action_plan = self.mlp.get_low_level_action_plan(state, self.heuristic, delivery_horizon=self.delivery_horizon, debug=False, goal_info=True)
         except TimeoutError:
             print("COUPLED PLANNING FAILURE")
             self.mlp.failures += 1
@@ -216,14 +217,23 @@ class EmbeddedPlanningAgent(Agent):
     might be stochastic in order to perform the search.
     """
 
-    def __init__(self, other_agent, mlp, env, delivery_horizon=2, logging_level=0):
+    def __init__(self, other_agent, mlp, env, delivery_horizon=2, set_history=False, seen_buffer=1, return_best=False, dist_heur=False, logging_level=0):
         """mlp is a MediumLevelPlanner"""
         self.other_agent = other_agent
         self.delivery_horizon = delivery_horizon
         self.mlp = mlp
         self.env = env
         self.h_fn = Heuristic(mlp.mp).simple_heuristic
+        self.set_history = set_history
+        self.seen_buffer = seen_buffer
+        self.return_best = return_best
+        self.dist_heur = dist_heur
         self.logging_level = logging_level
+
+        if self.set_history:
+            self.history = copy.deepcopy(self.other_agent.history)
+        else:
+            self.history = None
 
     def action(self, state):
         start_state = state.deepcopy()
@@ -233,11 +243,12 @@ class EmbeddedPlanningAgent(Agent):
         initial_env_state = self.env.state
         self.other_agent.env = self.env
 
-        expand_fn = lambda state: self.mlp.get_successor_states_fixed_other(state, self.other_agent, other_agent_index)
+        expand_fn = lambda state, history=None: self.mlp.get_successor_states_fixed_other(state, self.other_agent, other_agent_index, history=history, set_history=self.set_history)
         goal_fn = lambda state: len(state.order_list) == 0
-        heuristic_fn = lambda state: self.h_fn(state)
+        heuristic_fn = lambda state: self.h_fn(state, dist=self.dist_heur, debug=False)
 
-        search_problem = SearchTree(start_state, goal_fn, expand_fn, heuristic_fn, max_iter_count=50000)
+        search_problem = SearchTree(start_state, goal_fn, expand_fn, heuristic_fn, max_seen_count=self.seen_buffer, max_iter_count=50000, 
+                                    return_best=self.return_best, history=self.history)
 
         try:
             ml_s_a_plan, cost = search_problem.A_star_graph_search(info=True)
@@ -254,17 +265,32 @@ class EmbeddedPlanningAgent(Agent):
         # We just care about the first low level action of the first med level action
         first_s_a = ml_s_a_plan[1]
 
+        t = self.env.t
+        self.other_agent.action_probs = True
+        self.other_agent.logging_level = 1
+        self.other_agent.history = copy.deepcopy(self.history)
         # Print what the agent is expecting to happen
         if self.logging_level >= 2:
             self.env.state = start_state
-            for joint_a in first_s_a[0]:
-                print(self.env)
-                print(joint_a)
-                self.env.step(joint_a)
+            for s_a in ml_s_a_plan[1:]:
+                for joint_a in s_a[0]:
+                    self.other_agent.action(self.env.state)
+                    print(self.env)
+                    print(joint_a)
+                    self.env.step(joint_a)
+            self.other_agent.action(self.env.state)
             print(self.env)
             print("======The End======")
+        self.other_agent.action_probs = False
+        self.other_agent.logging_level = 0
+        self.env.t = t
 
         self.env.state = initial_env_state
+
+        if self.set_history:
+            self.other_agent.history = copy.deepcopy(self.history)
+            self.other_agent.action(state)
+            self.history = copy.deepcopy(self.other_agent.history)
 
         first_joint_action = first_s_a[0][0]
         if self.logging_level >= 1: 

@@ -156,6 +156,7 @@ class ImitationAgentFromPolicy(AgentFromPolicy):
         self.will_unblock_if_stuck = False if stuck_time == 0 else True
         self.mlp = mlp
         self.reset()
+        self.logging_level = 0
 
     def action(self, state):
         return self.actions(state)
@@ -194,6 +195,9 @@ class ImitationAgentFromPolicy(AgentFromPolicy):
             curr_agent_state = states[parallel_agent_idx]
             self.set_agent_index(curr_agent_idx)
             
+            if self.logging_level >= 1:
+                print(curr_agent_action_probs)
+
             # Removing wait action
             if self.no_waits:
                 curr_agent_action_probs = self.remove_indices_and_renormalize(curr_agent_action_probs, [Action.ACTION_TO_INDEX[Direction.STAY]])
@@ -207,6 +211,7 @@ class ImitationAgentFromPolicy(AgentFromPolicy):
                 action_idx = np.argmax(curr_agent_action_probs)
             curr_agent_action = Action.INDEX_TO_ACTION[action_idx]
             self.add_to_history(curr_agent_state, curr_agent_action)
+            #print("Appending to history: ", curr_agent_state, curr_agent_action)
 
             if self.action_probs:
                 all_actions.append(curr_agent_action_probs)
@@ -234,6 +239,9 @@ class ImitationAgentFromPolicy(AgentFromPolicy):
         last_actions = [s_a[1] for s_a in self.history[self.agent_index][-self.stuck_time:]]
         player_states = [s.players[self.agent_index] for s in last_states]
         pos_and_ors = [p.pos_and_or for p in player_states] + [state.players[self.agent_index].pos_and_or]
+        if self.logging_level > 0:
+            print("States in history: ", str(pos_and_ors))
+            print("States: ", last_actions)
         if self.checkEqual(pos_and_ors):
             return True, last_actions
         return False, []
