@@ -737,16 +737,18 @@ class MediumLevelActionManager(object):
         with open(filename, 'wb') as output:
             pickle.dump(self, output, pickle.HIGHEST_PROTOCOL)
 
-    def joint_ml_actions(self, state):
+    def joint_ml_actions(self, state, dist=False):
         """Determine all possible joint medium level actions for a certain state"""
-        #agent1_actions, agent2_actions = tuple(self.get_medium_level_actions(state, player) for player in state.players)
-        agent1_actions = self.get_medium_level_actions(state, state.players[0])
-        if len(agent1_actions) == 0:
-            agent1_actions = self.get_medium_level_actions(state, state.players[0], waiting_substitute=True)
+        if dist:
+            agent1_actions = self.get_medium_level_actions(state, state.players[0])
+            if len(agent1_actions) == 0:
+                agent1_actions = self.get_medium_level_actions(state, state.players[0], waiting_substitute=True)
 
-        agent2_actions = self.get_medium_level_actions(state, state.players[1])
-        if len(agent2_actions) == 0:
-            agent2_actions = self.get_medium_level_actions(state, state.players[1], waiting_substitute=True)
+            agent2_actions = self.get_medium_level_actions(state, state.players[1])
+            if len(agent2_actions) == 0:
+                agent2_actions = self.get_medium_level_actions(state, state.players[1], waiting_substitute=True)
+        else:
+            agent1_actions, agent2_actions = tuple(self.get_medium_level_actions(state, player) for player in state.players)
 
         joint_ml_actions = list(itertools.product(agent1_actions, agent2_actions))
         
@@ -950,7 +952,7 @@ class MediumLevelPlanner(object):
         mlp.ml_action_manager.save_to_file(final_filepath)
         return mlp
 
-    def get_low_level_action_plan(self, start_state, h_fn, delivery_horizon=4, debug=False, goal_info=False):
+    def get_low_level_action_plan(self, start_state, h_fn, delivery_horizon=4, dist=False, debug=False, goal_info=False):
         """
         Get a plan of joint-actions executable in the environment that will lead to a goal number of deliveries
         
@@ -961,7 +963,7 @@ class MediumLevelPlanner(object):
             full_joint_action_plan (list): joint actions to reach goal
         """
         start_state = start_state.deepcopy()
-        ml_plan, cost = self.get_ml_plan(start_state, h_fn, delivery_horizon=delivery_horizon, debug=debug)
+        ml_plan, cost, states_expl = self.get_ml_plan(start_state, h_fn, delivery_horizon=delivery_horizon, dist=dist, debug=debug)
 
         if start_state.order_list is None:
             start_state.order_list = ['any'] * delivery_horizon
@@ -971,7 +973,7 @@ class MediumLevelPlanner(object):
         )
         assert cost == len(full_joint_action_plan), "A* cost {} but full joint action plan cost {}".format(cost, len(full_joint_action_plan))
         if debug: print("Found plan with cost {}".format(cost))
-        return full_joint_action_plan
+        return full_joint_action_plan, states_expl
 
     def get_low_level_plan_from_ml_plan(self, start_state, ml_plan, heuristic_fn, debug=False, goal_info=False):
         t = 0
@@ -1013,7 +1015,7 @@ class MediumLevelPlanner(object):
             "Heuristic was not consistent. \n Prev h: {}, Curr h: {}, Actual cost: {}, Δh: {}" \
             .format(prev_heuristic_val, curr_heuristic_val, actual_edge_cost, delta_h)
 
-    def get_ml_plan(self, start_state, h_fn, delivery_horizon=4, debug=False):
+    def get_ml_plan(self, start_state, h_fn, delivery_horizon=4, dist=False, debug=False):
         """
         Solves A* Search problem to find optimal sequence of medium level actions
         to reach the goal number of deliveries
@@ -1029,15 +1031,15 @@ class MediumLevelPlanner(object):
         else:
             start_state.order_list = start_state.order_list[:delivery_horizon]
         
-        expand_fn = lambda state: self.get_successor_states(state)
+        expand_fn = lambda state: self.get_successor_states(state, dist)
         goal_fn = lambda state: state.num_orders_remaining == 0
         heuristic_fn = lambda state: h_fn(state, debug=debug)
 
         search_problem = SearchTree(start_state, goal_fn, expand_fn, heuristic_fn, debug=debug)
-        ml_plan, cost = search_problem.A_star_graph_search(info=True)
-        return ml_plan[1:], cost
+        ml_plan, cost, states_expl, _ = search_problem.A_star_graph_search(info=True)
+        return ml_plan[1:], cost, states_expl
     
-    def get_successor_states(self, start_state):
+    def get_successor_states(self, start_state, dist=False):
         """Successor states for medium-level actions are defined as
         the first state in the corresponding motion plan in which 
         one of the two agents' subgoals is satisfied.
@@ -1057,7 +1059,7 @@ class MediumLevelPlanner(object):
 
         start_jm_state = start_state.players_pos_and_or
         successor_states = []
-        for goal_jm_state in self.ml_action_manager.joint_ml_actions(start_state):
+        for goal_jm_state in self.ml_action_manager.joint_ml_actions(start_state, dist):
             joint_motion_action_plans, end_pos_and_ors, plan_costs = self.jmp.get_low_level_action_plan(start_jm_state, goal_jm_state)
             end_state = self.jmp.derive_state(start_state, end_pos_and_ors, joint_motion_action_plans)
 
@@ -1065,11 +1067,10 @@ class MediumLevelPlanner(object):
                 assert end_pos_and_ors[0] == goal_jm_state[0] or end_pos_and_ors[1] == goal_jm_state[1]
                 s_prime, _ = OvercookedEnv.execute_plan(self.mdp, start_state, joint_motion_action_plans, display=False)
                 assert end_state == s_prime,  [OvercookedEnv.print_state(self.mdp, s_prime), OvercookedEnv.print_state(self.mdp, end_state)]
-
             successor_states.append((goal_jm_state, end_state, min(plan_costs)))
         return successor_states
 
-    def get_successor_states_fixed_other(self, start_state, other_agent, other_agent_idx, history, set_history=False, stochastic=False):
+    def get_successor_states_fixed_other(self, start_state, other_agent, other_agent_idx, history, set_history=False):
         """
         Get the successor states of a given start state, assuming that the other agent is fixed and will act according to the passed in model
         """
@@ -1085,13 +1086,14 @@ class MediumLevelPlanner(object):
         successor_high_level_states = []
         for ml_action in ml_actions:
             if set_history and history is not None:
-                action_plan, end_state, cost = self.get_embedded_low_level_action_plan(start_state, ml_action, other_agent, other_agent_idx, copy.deepcopy(history))
+                action_plan, end_state, cost, res_hist = self.get_embedded_low_level_action_plan(start_state, ml_action, other_agent, other_agent_idx, copy.deepcopy(history))
+                other_agent.history = res_hist
             else:
-                action_plan, end_state, cost = self.get_embedded_low_level_action_plan(start_state, ml_action, other_agent, other_agent_idx)
+                action_plan, end_state, cost, _ = self.get_embedded_low_level_action_plan(start_state, ml_action, other_agent, other_agent_idx)
             
             if not self.mdp.is_terminal(end_state):
                 # Adding interact action and deriving last state
-                other_agent_action = other_agent.action(end_state)
+                other_agent_action, states_expl = other_agent.action(end_state)
                 last_joint_action = (Action.INTERACT, other_agent_action) if other_agent_idx == 1 else (other_agent_action, Action.INTERACT)
                 action_plan = action_plan + (last_joint_action,)
                 cost = cost + 1
@@ -1115,23 +1117,23 @@ class MediumLevelPlanner(object):
         heuristic_fn = lambda state: sum(pos_distance(state.players[agent_idx].position, goal_pos_and_or[0]))
 
         search_problem = SearchTree(state, goal_fn, expand_fn, heuristic_fn, history=history)
-        state_action_plan, cost = search_problem.A_star_graph_search(info=False)
+        state_action_plan, cost, _, hist_res = search_problem.A_star_graph_search(info=False)
         action_plan, state_plan = zip(*state_action_plan)
         action_plan = action_plan[1:]
         end_state = state_plan[-1]
-        return action_plan, end_state, cost
+        return action_plan, end_state, cost, hist_res
 
     def embedded_mdp_succ_fn(self, state, other_agent, history=None):
-        other_agent_action = other_agent.action(state)
+        if history is not None:
+            other_agent.history = copy.deepcopy(history)
+        other_agent_action, _ = other_agent.action(state)
 
         successors = []
         for a in Action.ALL_ACTIONS:
-            if history is not None:
-                other_agent.history = copy.deepcopy(history)
             successor_state, joint_action = self.embedded_mdp_step(state, a, other_agent_action, other_agent.agent_index)
             cost = 1
             if history is not None:
-                successors.append((joint_action, successor_state, cost, other_agent.history))
+                successors.append((joint_action, successor_state, cost, copy.deepcopy(other_agent.history)))
             else:
                 successors.append((joint_action, successor_state, cost))
         return successors
@@ -1326,7 +1328,7 @@ class HighLevelPlanner(object):
         heuristic_fn = lambda state: h_fn(state)
 
         search_problem = SearchTree(start_state, goal_fn, expand_fn, heuristic_fn, debug=debug)
-        hl_plan, cost = search_problem.A_star_graph_search(info=True)
+        hl_plan, cost, _, _ = search_problem.A_star_graph_search(info=True)
         return hl_plan[1:], cost
 
     def _advance_motion_goal_indices(self, curr_plan_indices, plan_lengths):
@@ -1345,10 +1347,10 @@ class HighLevelPlanner(object):
 
 class Heuristic(object):
 
-    def __init__(self, mp):
+    def __init__(self, mp, dist=False):
         self.motion_planner = mp
         self.mdp = mp.mdp
-        self.heuristic_cost_dict = self._calculate_heuristic_costs()
+        self.heuristic_cost_dict = self._calculate_heuristic_costs(dist)
     
     def hard_heuristic(self, state, goal_deliveries, time=0, debug=False):
         # NOTE: does not support tomatoes – currently deprecated as harder heuristic
@@ -1504,7 +1506,7 @@ class Heuristic(object):
         better_than_dispenser_total_cost = sum(np.sort(costs_better_than_dispenser)[:num_needed])
         return len(costs_better_than_dispenser), better_than_dispenser_total_cost
 
-    def _calculate_heuristic_costs(self, debug=False):
+    def _calculate_heuristic_costs(self, dist=False, debug=False):
         """Pre-computes the costs between common trip types for this mdp"""
         pot_locations = self.mdp.get_pot_locations()
         delivery_locations = self.mdp.get_serving_locations()
@@ -1512,13 +1514,23 @@ class Heuristic(object):
         onion_locations = self.mdp.get_onion_dispenser_locations()
         tomato_locations = self.mdp.get_tomato_dispenser_locations()
 
-        heuristic_cost_dict = {
-            'pot-delivery': self.motion_planner.min_cost_between_features(pot_locations, delivery_locations, manhattan_if_fail=True) + 1,
-            'dish-pot': self.motion_planner.min_cost_between_features(dish_locations, pot_locations, manhattan_if_fail=True) + 1
-        }
+        if dist:
+            heuristic_cost_dict = {
+                'pot-delivery': self.motion_planner.min_cost_between_features(pot_locations, delivery_locations, manhattan_if_fail=True) + 1,
+                'dish-pot': self.motion_planner.min_cost_between_features(dish_locations, pot_locations, manhattan_if_fail=True) + 1
+            }
+        else:
+            heuristic_cost_dict = {
+                'pot-delivery': self.motion_planner.min_cost_between_features(pot_locations, delivery_locations, manhattan_if_fail=True),
+                'dish-pot': self.motion_planner.min_cost_between_features(dish_locations, pot_locations, manhattan_if_fail=True)
+            }
 
-        onion_pot_cost = self.motion_planner.min_cost_between_features(onion_locations, pot_locations, manhattan_if_fail=True) + 1
-        tomato_pot_cost = self.motion_planner.min_cost_between_features(tomato_locations, pot_locations, manhattan_if_fail=True) + 1
+        if dist:
+            onion_pot_cost = self.motion_planner.min_cost_between_features(onion_locations, pot_locations, manhattan_if_fail=True) + 1
+            tomato_pot_cost = self.motion_planner.min_cost_between_features(tomato_locations, pot_locations, manhattan_if_fail=True) + 1
+        else:
+            onion_pot_cost = self.motion_planner.min_cost_between_features(onion_locations, pot_locations, manhattan_if_fail=True)
+            tomato_pot_cost = self.motion_planner.min_cost_between_features(tomato_locations, pot_locations, manhattan_if_fail=True)
 
         if debug: print("Heuristic cost dict", heuristic_cost_dict)
         assert onion_pot_cost != np.inf or tomato_pot_cost != np.inf
@@ -1547,8 +1559,6 @@ class Heuristic(object):
                              + pot_states_dict['onion']['ready'] + pot_states_dict['tomato']['ready']
         partially_full_onion_soups = pot_states_dict['onion']['partially_full']
         partially_full_tomato_soups = pot_states_dict['tomato']['partially_full']
-        num_onions_in_partially_full_pots = sum(sorted([state.get_object(loc).state[1] for loc in partially_full_onion_soups], reverse=True)[0:num_deliveries_to_go])
-        num_tomatoes_in_partially_full_pots = sum(sorted([state.get_object(loc).state[1] for loc in partially_full_tomato_soups], reverse=True)[0:num_deliveries_to_go])
 
         soups_in_transit = player_objects['soup']
         dishes_in_transit = objects_dict['dish'] + player_objects['dish']
@@ -1559,6 +1569,12 @@ class Heuristic(object):
         num_dish_to_pot = max([0, num_pot_to_delivery - len(dishes_in_transit)])
 
         num_pots_to_be_filled = num_pot_to_delivery - len(full_soups_in_pots)
+        if dist: # Only look at relevant pots
+            num_onions_in_partially_full_pots = sum(sorted([state.get_object(loc).state[1] for loc in partially_full_onion_soups], reverse=True)[0:num_pots_to_be_filled])
+            num_tomatoes_in_partially_full_pots = sum(sorted([state.get_object(loc).state[1] for loc in partially_full_tomato_soups], reverse=True)[0:num_pots_to_be_filled])
+        else:
+            num_onions_in_partially_full_pots = sum([state.get_object(loc).state[1] for loc in partially_full_onion_soups])
+            num_tomatoes_in_partially_full_pots = sum([state.get_object(loc).state[1] for loc in partially_full_tomato_soups])
         num_onions_needed_for_pots = num_pots_to_be_filled * 3 - len(onions_in_transit) - num_onions_in_partially_full_pots
         num_tomatoes_needed_for_pots = num_pots_to_be_filled * 3 - len(tomatoes_in_transit) - num_tomatoes_in_partially_full_pots
         num_onion_to_pot = max([0, num_onions_needed_for_pots])
@@ -1566,7 +1582,7 @@ class Heuristic(object):
 
         pot_to_delivery_costs = self.heuristic_cost_dict['pot-delivery'] * num_pot_to_delivery
         dish_to_pot_costs = self.heuristic_cost_dict['dish-pot'] * num_dish_to_pot
-        if dist: #NEW
+        if dist: # Add manhattan distance from dish to pot to rank states where the dish is closer higher
             dish_to_pot_costs += sum(sorted((self.manhat_heuristic(pos.position, pot_locations, self.heuristic_cost_dict['dish-pot']) for pos in dishes_in_transit))
                                      [0:num_pot_to_delivery])
 
@@ -1574,7 +1590,7 @@ class Heuristic(object):
         if 'onion-pot' in self.heuristic_cost_dict.keys():
             onion_to_pot_costs = self.heuristic_cost_dict['onion-pot'] * num_onion_to_pot
             
-            if dist: #NEW
+            if dist: # Add manhattan distance from onion to pot to rank states where the onion is closer higher
                 num_onions = min([max([0, num_pots_to_be_filled * 3 - num_onions_in_partially_full_pots]), len(onions_in_transit)])
                 onion_to_pot_costs += sum(sorted((self.manhat_heuristic(pos.position, pot_locations, self.heuristic_cost_dict['onion-pot'], debug) for pos in onions_in_transit))
                                           [0:num_onions])
@@ -1583,7 +1599,7 @@ class Heuristic(object):
         if 'tomato-pot' in self.heuristic_cost_dict.keys():
             tomato_to_pot_costs = self.heuristic_cost_dict['tomato-pot'] * num_tomato_to_pot
 
-            if dist: #NEW
+            if dist: # Add manhattan distance from tomato to pot to rank states where the onion is closer higher
                 num_tomatoes = min([max([0, num_pots_to_be_filled * 3 - num_tomatoes_in_partially_full_pots]), len(tomatoes_in_transit)])
                 tomato_to_pot_costs += sum(sorted((self.manhat_heuristic(pos.position, pot_locations, self.heuristic_cost_dict['tomato-pot']) for pos in tomatoes_in_transit))
                                            [0:num_tomatoes])
@@ -1595,7 +1611,7 @@ class Heuristic(object):
         items_to_pot_cost = min(items_to_pot_costs)
 
         # Cost of cooking soup NEW
-        if dist:
+        if dist: # Add time left to cook soup to cost to prevent reward droughts when waiting for the soup to cook
             pots_left_to_cook = max([0, num_pot_to_delivery - len(pot_states_dict['onion']['ready']) - len(pot_states_dict['tomato']['ready'])])
             pots_cooking = pot_states_dict['onion']['cooking'] + pot_states_dict['tomato']['cooking']
             cook_cost = sum(sorted([self.mdp.soup_cooking_time - state.get_object(pos).state[2] for pos in pots_cooking], reverse=True)
@@ -1625,7 +1641,9 @@ class Heuristic(object):
         return heuristic_cost
     
     def manhat_heuristic(self, pos, pot_locations, heuristic, debug=False):
-        if False:
+        if False:   # This was an alternate method by using the actual walking distance instead of the manhattan one,
+                    # however this is only necessary for the counter circuit layout, which won't be focused on.
+                    # Currently some changes have been made to allow for paths between non-interactable but this code is UNTESTED
             min_cost = self.motion_planner.min_cost_between_features([pos], pot_locations, manhattan_if_fail=True, facing_check=False)
         else:
             min_cost = np.inf

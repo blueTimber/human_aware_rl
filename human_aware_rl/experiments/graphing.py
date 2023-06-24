@@ -6,17 +6,23 @@ def get_algorithm_color(alg):
     other_col = '#4BACC6' # thiel
     other_other_col = "#2d6777"
     human_baseline_col = "#aeaeae"#"#c1c1c1"
+    counter_col = "#780116"
 
-    if alg == 'CP+CP' or alg == 'PPO_SP+PPO_SP' or alg == 'PBT+PBT' or alg == "H+H" or alg == "avg_bc_train+bc_train":
+    if alg == 'CP+CP' or alg == 'CP+CP_heur' or alg == 'CP+CP_counter' or alg == 'PPO_SP+PPO_SP' or alg == 'PBT+PBT' or alg == "H+H" or alg == "avg_bc_train+bc_train":
         return opt_baseline_col
-    elif alg in ["CP+BC_test", 'CP+BC_test_0', 'CP+BC_test_1', 'PPO_SP+BC_test_0', 'PPO_SP+BC_test_1', 'ppo_sp_no_advers_0', 'ppo_sp_no_advers_1', 'ppo_sp_base_0', 'ppo_sp_base_1']:
+    elif alg in ["CP+BC_test", 'CP+BC_test_0', 'CP+BC_test_1', 'PPO_SP+BC_test_0', 'PPO_SP+BC_test_1', 'ppo_sp_no_advers_0', 'ppo_sp_no_advers_1', 'ppo_sp_base_0', 'ppo_sp_base_1',
+                 "P_BC_train+BC_test_0_hist", "P_BC_train+BC_test_1_hist"]:
         return other_other_col #'#35ce47'#'#0000cc'
-    elif alg in ['pbt_no_advers_0', 'pbt_no_advers_1', 'pbt_base_0', 'pbt_base_1', 'PBT+BC_0', 'PBT+BC_1', 'P_BC_train+BC_test_0_stochastic', 'P_BC_train+BC_test_1_stochastic']:
+    elif alg in ['pbt_no_advers_0', 'pbt_no_advers_1', 'pbt_base_0', 'pbt_base_1', 'PBT+BC_0', 'PBT+BC_1', 'P_BC_train+BC_test_0_stochastic', 'P_BC_train+BC_test_1_stochastic',
+                 "CP+BC_test_0_counter", "CP+BC_test_1_counter", "P_BC_train+BC_test_0_heur", "P_BC_train+BC_test_1_heur"]:
         return other_col #'#35ce47'#'#0000cc'
     elif alg in ["BC_train+BC_test_0", "BC_train+BC_test_1"]:
         return human_baseline_col #"#3884c9"
-    elif alg in ["P+BC_test", 'P_BC_train+BC_test_0', 'P_BC_train+BC_test_1', 'PPO_BC_train+BC_test_0', 'PPO_BC_train+BC_test_1', 'ppo_bc_no_advers_0', 'ppo_bc_no_advers_1', 'ppo_bc_base_0', 'ppo_bc_base_1']:
+    elif alg in ["P+BC_test", 'P_BC_train+BC_test_0', 'P_BC_train+BC_test_1', 'PPO_BC_train+BC_test_0', 'PPO_BC_train+BC_test_1', 'ppo_bc_no_advers_0', 'ppo_bc_no_advers_1', 'ppo_bc_base_0', 'ppo_bc_base_1',
+                 "CP+BC_test_0_heur", "CP+BC_test_1_heur"]:
         return ours_col #'#35ce47'#'#00cc00'
+    elif alg in ["P_BC_train+BC_test_0_counter", "P_BC_train+BC_test_1_counter"]:
+        return counter_col
     else:
         raise ValueError(alg, "name not recognized")
 
@@ -67,4 +73,17 @@ def graph_title(hist_type):
     elif hist_type == "humanai_base":
         return "Performance with real humans (unfiltered)"
     return 'Performance with human proxy model'
+
+def get_algorithm_border(alg):
+    ours_col = '#F79646'# orange #'#f79646'
+    other_col = '#4BACC6' # thiel
+
+    if alg == 'CP+CP':
+        return 'gray'
+    elif alg == 'CP+CP_heur':
+        return ours_col
+    elif alg == 'CP+CP_counter':
+        return other_col #'#35ce47'#'#0000cc'
+    else:
+        raise ValueError(alg, "name not recognized")
     

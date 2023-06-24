@@ -141,14 +141,15 @@ class OvercookedEnv(object):
         if display: print(self)
         while not done:
             s_t = self.state
-            a_t = agent_pair.joint_action(s_t)
+            (joi_a_0, joi_a_1, states_expl) = agent_pair.joint_action(s_t)
+            a_t = (joi_a_0, joi_a_1)
 
             # Break if either agent is out of actions
             if any([a is None for a in a_t]):
                 break
 
             s_tp1, r_t, done, info = self.step(a_t)
-            trajectory.append((s_t, a_t, r_t, done))
+            trajectory.append((s_t, a_t, r_t, done, states_expl))
 
             if display and self.t < display_until:
                 self.print_state_transition(a_t, r_t, info)
@@ -180,6 +181,7 @@ class OvercookedEnv(object):
             "ep_actions": [],
             "ep_rewards": [], # Individual dense (= sparse + shaped * rew_shaping) reward values
             "ep_dones": [], # Individual done values
+            "ep_states": [], # Amount of states explored for step
 
             # With shape (n_episodes, ):
             "ep_returns": [], # Sum of dense and sparse rewards across each episode
@@ -193,11 +195,12 @@ class OvercookedEnv(object):
             agent_pair.set_mdp(self.mdp)
 
             trajectory, time_taken, tot_rews_sparse, tot_rews_shaped = self.run_agents(agent_pair, display=display, include_final_state=final_state, display_until=display_until)
-            obs, actions, rews, dones = trajectory.T[0], trajectory.T[1], trajectory.T[2], trajectory.T[3]
+            obs, actions, rews, dones, states_expl = trajectory.T[0], trajectory.T[1], trajectory.T[2], trajectory.T[3], trajectory.T[4]
             trajectories["ep_observations"].append(obs)
             trajectories["ep_actions"].append(actions)
             trajectories["ep_rewards"].append(rews)
             trajectories["ep_dones"].append(dones)
+            trajectories["ep_states"].append(states_expl)
             trajectories["ep_returns"].append(tot_rews_sparse + tot_rews_shaped * reward_shaping)
             trajectories["ep_returns_sparse"].append(tot_rews_sparse)
             trajectories["ep_lengths"].append(time_taken)

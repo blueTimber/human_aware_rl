@@ -159,7 +159,7 @@ class ImitationAgentFromPolicy(AgentFromPolicy):
         self.logging_level = 0
 
     def action(self, state):
-        return self.actions(state)
+        return (self.actions(state), 0)
 
     def actions(self, states, agent_indices=None):
         """

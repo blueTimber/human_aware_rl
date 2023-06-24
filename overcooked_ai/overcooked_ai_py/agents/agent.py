@@ -38,7 +38,13 @@ class AgentGroup(object):
             assert allow_duplicate_agents, "All agents should be separate instances, unless allow_duplicate_agents is set to true"
 
     def joint_action(self, state):
-        return tuple(a.action(state) for a in self.agents)
+        actions = ()
+        states = []
+        for a in self.agents:
+            action, states_expl = a.action(state)
+            actions = actions + (action,)
+            states.append(states_expl)
+        return actions + (max(states),)
 
     def set_mdp(self, mdp):
         for a in self.agents:
@@ -71,10 +77,10 @@ class AgentPair(AgentGroup):
             # When using the same instance of an agent for self-play, 
             # reset agent index at each turn to prevent overwriting it
             self.a0.set_agent_index(0)
-            action_0 = self.a0.action(state)
+            action_0, states_expl_0 = self.a0.action(state)
             self.a1.set_agent_index(1)
-            action_1 = self.a1.action(state)
-            return (action_0, action_1)
+            action_1, states_expl_1 = self.a1.action(state)
+            return (action_0, action_1, max([states_expl_0, states_expl_1]))
         else:
             return super().joint_action(state)
 
@@ -85,13 +91,16 @@ class CoupledPlanningPair(AgentPair):
     action once rather than repeating computation to find action of second agent
     """
 
-    def __init__(self, agent):
+    def __init__(self, agent, debug=False):
         super().__init__(agent, agent, allow_duplicate_agents=True)
+        self.debug = debug
 
     def joint_action(self, state):
         # Reduce computation by half if both agents are coupled planning agents
-        joint_action_plan = self.a0.mlp.get_low_level_action_plan(state, self.a0.heuristic, delivery_horizon=self.a0.delivery_horizon, goal_info=True)
-        return joint_action_plan[0] if len(joint_action_plan) > 0 else (None, None)
+        joint_action_plan, states_expl = self.a0.mlp.get_low_level_action_plan(state, self.a0.heuristic, delivery_horizon=self.a0.delivery_horizon,
+                                                                               dist=self.a0.dist_heur, goal_info=True, 
+                                                                               debug=self.debug)
+        return (joint_action_plan[0][0], joint_action_plan[0][1], states_expl) if len(joint_action_plan) > 0 else (None, None, states_expl)
 
 
 class AgentFromPolicy(Agent):
@@ -121,7 +130,7 @@ class AgentFromPolicy(Agent):
         """
         self.history.append(state)
         try:
-            return self.state_policy(state, self.mdp, self.agent_index, self.stochastic, self.action_probs)
+            return (self.state_policy(state, self.mdp, self.agent_index, self.stochastic, self.action_probs), 0)
         except AttributeError as e:
             raise AttributeError("{}. Most likely, need to set the agent_index or mdp of the Agent before calling the action method.".format(e))
 
@@ -148,7 +157,7 @@ class RandomAgent(Agent):
     
     def action(self, state):
         idx = np.random.randint(4)
-        return Action.ALL_ACTIONS[idx]
+        return (Action.ALL_ACTIONS[idx], 0)
 
     def direct_action(self, obs):
         return [np.random.randint(4) for _ in range(self.sim_threads)]
@@ -160,7 +169,7 @@ class StayAgent(Agent):
         self.sim_threads = sim_threads
     
     def action(self, state):
-        return Action.STAY
+        return (Action.STAY, 0)
 
     def direct_action(self, obs):
         return [Action.ACTION_TO_INDEX[Action.STAY]] * self.sim_threads
@@ -181,7 +190,7 @@ class FixedPlanAgent(Agent):
             return Action.STAY
         curr_action = self.plan[self.i]
         self.i += 1
-        return curr_action
+        return (curr_action, 0)
     
     def reset(self):
         self.i = 0
@@ -194,20 +203,24 @@ class CoupledPlanningAgent(Agent):
     is also a CoupledPlanningAgent, and then takes the first action in the plan.
     """
 
-    def __init__(self, mlp, delivery_horizon=2, heuristic=None, dist_heur=False):
+    def __init__(self, mlp, delivery_horizon=2, heuristic=None, dist_heur=False, debug=False):
         self.mlp = mlp
         self.mlp.failures = 0
-        self.heuristic = heuristic if heuristic is not None else lambda state, time=0, debug=False: Heuristic(mlp.mp).simple_heuristic(state, time, dist=dist_heur, debug=debug)
+        self.heuristic = heuristic if heuristic is not None else lambda state, time=0, debug=False: Heuristic(mlp.mp, dist=dist_heur).simple_heuristic(
+            state, time, dist=dist_heur, debug=debug)
         self.delivery_horizon = delivery_horizon
+        self.dist_heur = dist_heur
+        self.debug = debug
 
     def action(self, state):
         try:
-            joint_action_plan = self.mlp.get_low_level_action_plan(state, self.heuristic, delivery_horizon=self.delivery_horizon, debug=False, goal_info=True)
+            joint_action_plan, states_expl = self.mlp.get_low_level_action_plan(state, self.heuristic, delivery_horizon=self.delivery_horizon, dist=self.dist_heur, 
+                                                                                debug=self.debug, goal_info=True)
         except TimeoutError:
             print("COUPLED PLANNING FAILURE")
             self.mlp.failures += 1
-            return Direction.ALL_DIRECTIONS[np.random.randint(4)]
-        return joint_action_plan[0][self.agent_index] if len(joint_action_plan) > 0 else None
+            return (Direction.ALL_DIRECTIONS[np.random.randint(4)], 0)
+        return (joint_action_plan[0][self.agent_index], states_expl) if len(joint_action_plan) > 0 else (None, states_expl)
 
 
 class EmbeddedPlanningAgent(Agent):
@@ -223,7 +236,7 @@ class EmbeddedPlanningAgent(Agent):
         self.delivery_horizon = delivery_horizon
         self.mlp = mlp
         self.env = env
-        self.h_fn = Heuristic(mlp.mp).simple_heuristic
+        self.h_fn = Heuristic(mlp.mp,dist=dist_heur).simple_heuristic
         self.set_history = set_history
         self.seen_buffer = seen_buffer
         self.return_best = return_best
@@ -243,7 +256,8 @@ class EmbeddedPlanningAgent(Agent):
         initial_env_state = self.env.state
         self.other_agent.env = self.env
 
-        expand_fn = lambda state, history=None: self.mlp.get_successor_states_fixed_other(state, self.other_agent, other_agent_index, history=history, set_history=self.set_history)
+        expand_fn = lambda state, history=None: self.mlp.get_successor_states_fixed_other(state, self.other_agent, other_agent_index, 
+                                                                                          history=history, set_history=self.set_history)
         goal_fn = lambda state: len(state.order_list) == 0
         heuristic_fn = lambda state: self.h_fn(state, dist=self.dist_heur, debug=False)
 
@@ -251,11 +265,11 @@ class EmbeddedPlanningAgent(Agent):
                                     return_best=self.return_best, history=self.history)
 
         try:
-            ml_s_a_plan, cost = search_problem.A_star_graph_search(info=True)
+            ml_s_a_plan, cost, states_expl, _ = search_problem.A_star_graph_search(info=True)
         except TimeoutError:
             print("A* failed, taking random action")
             idx = np.random.randint(5)
-            return Action.ALL_ACTIONS[idx]
+            return (Action.ALL_ACTIONS[idx], 0)
 
         # Check estimated cost of the plan equals 
         # the sum of the costs of each medium-level action
@@ -268,7 +282,8 @@ class EmbeddedPlanningAgent(Agent):
         t = self.env.t
         self.other_agent.action_probs = True
         self.other_agent.logging_level = 1
-        self.other_agent.history = copy.deepcopy(self.history)
+        if self.set_history:
+            self.other_agent.history = copy.deepcopy(self.history)
         # Print what the agent is expecting to happen
         if self.logging_level >= 2:
             self.env.state = start_state
@@ -296,7 +311,7 @@ class EmbeddedPlanningAgent(Agent):
         if self.logging_level >= 1: 
             print("expected joint action", first_joint_action)
         action = first_joint_action[self.agent_index]
-        return action
+        return (action, states_expl)
 
 
 class GreedyHumanModel(Agent):
@@ -368,7 +383,7 @@ class GreedyHumanModel(Agent):
 
         # NOTE: Assumes that calls to action are sequential
         self.prev_state = state
-        return chosen_action
+        return (chosen_action, 0)
 
     def choose_motion_goal(self, start_pos_and_or, motion_goals):
         """Returns chosen motion goal (either boltzmann rationally or rationally), and corresponding action"""

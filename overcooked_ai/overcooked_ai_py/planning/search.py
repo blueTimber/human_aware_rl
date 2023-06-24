@@ -61,7 +61,7 @@ class SearchTree(object):
                     print("Returning best state found")
                     print("Time elapsed: \t{:.2f} seconds".format(
                         time.time() - start_time))
-                    return curr_node.get_path(), curr_node.backwards_cost
+                    return curr_node.get_path(), curr_node.backwards_cost, iter_count, curr_node.history
 
                 raise TimeoutError("Too many states expanded expanded")
 
@@ -71,7 +71,7 @@ class SearchTree(object):
                     elapsed_time = 0.01
                 if info: print("Found goal after: \t{:.2f} seconds,   \t{} state expanded ({:.2f} unique) \t ~{:.2f} expansions/s".format(
                     elapsed_time, iter_count, len(seen)/iter_count, iter_count/elapsed_time))
-                return curr_node.get_path(), curr_node.backwards_cost
+                return curr_node.get_path(), curr_node.backwards_cost, iter_count, curr_node.history
             
             if curr_node.history is not None:
                 successors = self.expand(curr_state, curr_node.history)
@@ -101,7 +101,7 @@ class SearchTree(object):
             print("Returning best state found")
             print("Time elapsed: \t{:.2f} seconds".format(
                 time.time() - start_time))
-            return curr_node.get_path(), curr_node.backwards_cost
+            return curr_node.get_path(), curr_node.backwards_cost, iter_count, curr_node.history
         raise TimeoutError("A* graph search was unable to find any goal state.")
 
     def estimated_total_cost(self, node):
