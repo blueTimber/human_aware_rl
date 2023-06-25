@@ -130,6 +130,14 @@ To play with newly trained agents, just follow the instructions in the [Overcook
 
 # Reproducing results
 
-All DRL results can be reproduced by running the `.sh` scripts under `human_aware_rl/experiments/`.
+The `human_aware_rl/experiments` folder contains all the necessary jupyter notebook files to recreate the results.
 
-All non-DRL results can be reproduced by running cells in `NeurIPS Experiments and Visualizations.ipynb`.
+The `CP experiments.ipynb` file will recreate all coupled planner results except for the counters.
+The `P_BC experiments.ipynb` file will recreate all model-based planner results except for the counters.
+
+The `CP counters.ipynb` file will recreate all counter results for the coupled planning agent.
+The `P_BC counters.ipynb` file will recreate all counter results for the model-based planning agent.
+
+Finally, generating the graphs can be done through the `Experiment results.ipynb` file.
+
+All other files are left-over from the paper by Carroll et al.
